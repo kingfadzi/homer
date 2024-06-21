@@ -1,40 +1,39 @@
-# build stage
-FROM node:lts-alpine3.19 as build-stage
+# Base image
+FROM registry.access.redhat.com/ubi8/ubi:latest as base
+
+RUN curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - && \
+    yum install -y nodejs && \
+    yum clean all
+
+FROM base as build-stage
 
 WORKDIR /app
 
-COPY package.json ./
-RUN yarn install --verbose --frozen-lockfile --non-interactive
+COPY package.json package-lock.json* ./
+
+RUN npm install
 
 COPY . .
-RUN yarn build
 
-# production stage
-FROM alpine:3.19
+RUN npm run build
 
-ENV GID 1000
-ENV UID 1000
-ENV PORT 8080
-ENV SUBFOLDER "/_"
-ENV INIT_ASSETS 1
-ENV IPV6_DISABLE 0
+FROM base as production-stage
 
-RUN addgroup -S lighttpd -g ${GID} && adduser -D -S -u ${UID} lighttpd lighttpd && \
-    apk add -U --no-cache lighttpd
+RUN yum install -y nginx && \
+    yum clean all && \
+    mkdir -p /usr/share/nginx/html /var/log/nginx /var/cache/nginx /var/run/nginx && \
+    chmod -R 777 /var/log/nginx /var/cache/nginx /var/run/nginx
 
-WORKDIR /www
+WORKDIR /usr/share/nginx/html
 
-COPY lighttpd.conf /lighttpd.conf
-COPY lighttpd-ipv6.sh /etc/lighttpd/ipv6.sh
-COPY entrypoint.sh /entrypoint.sh
-COPY --from=build-stage --chown=${UID}:${GID} /app/dist /www/
-COPY --from=build-stage --chown=${UID}:${GID} /app/dist/assets /www/default-assets
+COPY --from=build-stage /app/dist /usr/share/nginx/html
 
-USER ${UID}:${GID}
+COPY nginx.conf /etc/nginx/nginx.conf
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${PORT}/ || exit 1
+RUN chown -R nginx:nginx /usr/share/nginx/html /var/log/nginx /var/cache/nginx /var/run/nginx
 
-EXPOSE ${PORT}
+USER nginx
 
-ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
+EXPOSE 8080
+
+CMD ["nginx", "-g", "daemon off;"]
